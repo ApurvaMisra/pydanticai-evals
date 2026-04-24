@@ -16,6 +16,7 @@ so the eval harness (added in a separate session) is the main event.
   - `query_internal_db(topic)` — SQLite; requires human approval
 - `tool_calls_limit` safety net to prevent runaway loops
 - Color-coded trace logging so you can see every model call and tool call
+- OpenTelemetry → Arize Phoenix tracing (AGENT / TOOL / LLM spans, inputs, outputs, token counts)
 
 ## Prerequisites
 
@@ -29,7 +30,7 @@ so the eval harness (added in a separate session) is the main event.
 ```bash
 # 1. Install dependencies
 uv venv
-uv pip install -e ".[dev]"
+uv pip install -e ".[dev,observability]"
 
 # 2. Configure keys
 cp .env.example .env
@@ -41,6 +42,15 @@ uv run python -m data.seed_db
 ```
 
 ## Running the agent
+
+Start Phoenix in a separate terminal (leave it running) to receive traces:
+
+```bash
+uv run phoenix serve
+# UI at http://localhost:6006
+```
+
+Then run the agent:
 
 ```bash
 uv run python -m agent.run "Summarize our Q1 product launch results"
@@ -64,6 +74,22 @@ uv run pytest
 
 Tests use `FunctionModel` to mock the LLM — no API calls needed.
 
+## Observability
+
+`Agent(..., instrument=True)` in `build_agent()` makes PydanticAI emit OpenTelemetry
+spans for every turn, tool call, and HITL gate. `shared/observability.py::setup_phoenix()`
+installs a `TracerProvider` with two processors:
+
+1. `OpenInferenceSpanProcessor` — rewrites PydanticAI's GenAI-convention spans
+   with OpenInference attributes (`openinference.span.kind`, `input.value`,
+   `output.value`, `llm.token_count.*`) so Phoenix classifies them as
+   AGENT / LLM / TOOL and renders prompts, responses, and token counts.
+2. `BatchSpanProcessor(OTLPSpanExporter)` — ships them to Phoenix via OTLP/HTTP
+   (default `http://localhost:6006`, override with `PHOENIX_COLLECTOR_ENDPOINT`).
+
+Tests and library imports stay trace-free — Phoenix setup only happens in the
+CLI entry point (`agent/run.py`).
+
 ## Repo map
 
 ```
@@ -76,6 +102,7 @@ shared/               # tools & utilities used by the agent
   tools.py            # search_web (SerpAPI), query_internal_db (SQLite)
   types.py            # SearchResult, InternalDoc
   trace.py            # color-aware tagged trace helper
+  observability.py    # OpenTelemetry → Phoenix setup
 data/                 # SQLite seeder and fixture data
 tests/                # pytest suite
 ```
