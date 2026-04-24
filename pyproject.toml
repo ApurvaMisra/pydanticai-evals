@@ -1,0 +1,35 @@
+[project]
+name = "pydanticai-evals"
+version = "0.1.0"
+description = "PydanticAI deep-research agent — scaffolding for an evals demo"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic-ai>=0.4",
+    "openai>=1.50",
+    "serpapi>=0.1",
+    "python-dotenv>=1.0",
+    "pydantic>=2.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-mock>=3.14",
+]
+observability = [
+    "arize-phoenix>=4.0",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
+    "openinference-instrumentation-pydantic-ai>=0.1",
+]
+
+# This repo is a multi-app artifact, not a library — suppress setuptools
+# flat-layout auto-discovery so `uv pip install -e .` doesn't try to pick a
+# single top-level package.
+[tool.setuptools]
+packages = []
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
