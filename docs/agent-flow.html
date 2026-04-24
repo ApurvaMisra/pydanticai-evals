@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PydanticAI Deep-Research Agent — Flow Diagram</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #121a33;
+      --text: #e6ecff;
+      --muted: #9aa7cf;
+      --accent: #6aa3ff;
+      --accent2: #ffd56a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 2.5rem 1.5rem 4rem;
+      background: radial-gradient(1200px 800px at 20% 0%, #17224a 0%, var(--bg) 60%) fixed;
+      color: var(--text);
+      font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    main { max-width: 1100px; margin: 0 auto; }
+    h1 { font-size: 2rem; margin: 0 0 0.25rem; letter-spacing: -0.01em; }
+    h2 { font-size: 1.25rem; margin: 2.25rem 0 0.75rem; color: var(--accent); }
+    p.lede { color: var(--muted); margin-top: 0; }
+    p { color: var(--muted); }
+    code { background: #1b2548; padding: 0.1em 0.35em; border-radius: 4px; color: var(--accent2); font-size: 0.9em; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid #24305a;
+      border-radius: 12px;
+      padding: 1.25rem 1rem;
+      margin-top: 0.5rem;
+      overflow-x: auto;
+    }
+    .mermaid { background: transparent; }
+    .legend {
+      display: flex; flex-wrap: wrap; gap: 1rem;
+      font-size: 0.88rem; color: var(--muted); margin-top: 0.75rem;
+    }
+    .legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+    .legend .dot { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+    footer { margin-top: 3rem; color: var(--muted); font-size: 0.85rem; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>PydanticAI Deep-Research Agent</h1>
+    <p class="lede">
+      A minimal research agent with two tools, a human-in-the-loop approval gate,
+      structured output, and OpenTelemetry tracing into Arize Phoenix.
+    </p>
+
+    <h2>Agent execution flow</h2>
+    <p>
+      The model decides which tool to call. <code>search_web</code> runs immediately.
+      <code>query_internal_db</code> is registered with <code>requires_approval=True</code>,
+      so PydanticAI returns a <code>DeferredToolRequests</code> and the runtime asks a
+      human. The loop continues until the model emits a <code>FinalAnswer</code> or
+      the <code>tool_calls_limit</code> is hit.
+    </p>
+    <div class="panel">
+      <div class="mermaid">
+flowchart TD
+  Start([User question via CLI]):::start --> CLI["agent/run.py<br/>load_dotenv() · setup_phoenix()"]
+  CLI --> RunAgent["run_agent(question)"]
+  RunAgent --> Build["build_agent()<br/>Agent(..., instrument=True)"]
+  Build --> FirstRun["agent.run(question)<br/>UsageLimits(tool_calls_limit=6)"]
+  FirstRun --> Model{"gpt-5.2<br/>what's next?"}:::decision
+
+  Model -->|"tool: search_web(query)"| Web["SerpAPI HTTP call"]:::tool
+  Web --> ToolResult[[Tool result text<br/>back to model]]
+
+  Model -->|"tool: query_internal_db(topic)<br/>requires_approval=True"| Deferred["DeferredToolRequests<br/>returned from agent.run"]:::hitl
+  Deferred --> Approver{"console_approver<br/>Approve? y/N"}:::decision
+  Approver -->|"y"| DB[("research.db<br/>SELECT by topic")]:::tool
+  Approver -->|"n"| Denied["Denial surfaces to model<br/>in next turn"]
+  DB --> ToolResult
+  Denied --> ToolResult
+
+  ToolResult --> Resume["agent.run(<br/>message_history=...,<br/>deferred_tool_results=...<br/>)"]
+  Resume --> Model
+
+  Model -->|"output_type=FinalAnswer"| Final["FinalAnswer<br/>answer · citations[] · confidence"]:::final
+  Final --> Print(["Print to stdout"]):::start
+
+  classDef start fill:#1f3a6b,stroke:#6aa3ff,color:#e6ecff;
+  classDef decision fill:#3a2d5e,stroke:#b48cff,color:#f0e8ff;
+  classDef tool fill:#1f4a3a,stroke:#6affc8,color:#e8fff5;
+  classDef hitl fill:#5e3a1f,stroke:#ffb46a,color:#fff0e0;
+  classDef final fill:#4a1f3a,stroke:#ff6ac8,color:#ffe0f0;
+      </div>
+      <div class="legend">
+        <span><span class="dot" style="background:#6aa3ff"></span> entry / output</span>
+        <span><span class="dot" style="background:#b48cff"></span> decision</span>
+        <span><span class="dot" style="background:#6affc8"></span> tool execution</span>
+        <span><span class="dot" style="background:#ffb46a"></span> human-in-the-loop gate</span>
+        <span><span class="dot" style="background:#ff6ac8"></span> structured output</span>
+      </div>
+    </div>
+
+    <h2>Observability pipeline</h2>
+    <p>
+      <code>Agent(..., instrument=True)</code> makes PydanticAI emit OpenTelemetry
+      spans for every turn, tool call, and HITL gate. The spans are enhanced with
+      OpenInference semantic attributes in-place, then shipped to a locally running
+      Phoenix over OTLP/HTTP.
+    </p>
+    <div class="panel">
+      <div class="mermaid">
+flowchart LR
+  Agent["PydanticAI<br/>instrument=True"] -->|"GenAI-convention<br/>OTel spans"| Enhance["OpenInferenceSpanProcessor<br/>rewrites attributes in-place<br/>(openinference.span.kind,<br/>input.value, output.value,<br/>llm.token_count.*)"]
+  Enhance --> Batch["BatchSpanProcessor<br/>buffers spans<br/>(flushes on atexit)"]
+  Batch --> Export["OTLPSpanExporter<br/>HTTP POST<br/>/v1/traces"]
+  Export --> Phoenix[("Phoenix<br/>localhost:6006")]:::phoenix
+  Phoenix --> UI["Phoenix UI<br/>AGENT · TOOL · LLM<br/>prompts · responses · tokens"]:::ui
+
+  classDef phoenix fill:#2d1f5e,stroke:#b48cff,color:#f0e8ff;
+  classDef ui fill:#1f3a6b,stroke:#6aa3ff,color:#e6ecff;
+      </div>
+    </div>
+
+    <h2>Key files</h2>
+    <p>
+      <code>agent/run.py</code> · CLI entry, wires observability<br/>
+      <code>agent/main.py</code> · <code>build_agent()</code>, tool definitions, HITL loop<br/>
+      <code>agent/models.py</code> · <code>FinalAnswer</code>, <code>Citation</code><br/>
+      <code>shared/tools.py</code> · <code>search_web</code> (SerpAPI), <code>query_internal_db</code> (SQLite)<br/>
+      <code>shared/observability.py</code> · <code>setup_phoenix()</code> — TracerProvider + OTLP exporter
+    </p>
+
+    <footer>
+      Rendered locally with <a href="https://mermaid.js.org/">Mermaid</a> from the jsDelivr CDN.
+      Repo: <a href="https://github.com/ApurvaMisra/pydanticai-evals">ApurvaMisra/pydanticai-evals</a>
+    </footer>
+  </main>
+
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "dark",
+      themeVariables: {
+        background: "#121a33",
+        primaryColor: "#1f3a6b",
+        primaryTextColor: "#e6ecff",
+        primaryBorderColor: "#6aa3ff",
+        lineColor: "#9aa7cf",
+        secondaryColor: "#1f4a3a",
+        tertiaryColor: "#3a2d5e",
+        fontSize: "15px"
+      },
+      flowchart: { curve: "basis", htmlLabels: true, nodeSpacing: 50, rankSpacing: 65 }
+    });
+  </script>
+</body>
+</html>
